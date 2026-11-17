@@ -32,6 +32,7 @@ from .profiles import (
     public_profile,
     public_speech_profile,
 )
+from .provider_gateway import router as provider_gateway_router
 from .retrieval_compose import RetrievalComposeRunner
 from .retrieval_operations import RetrievalOperationCoordinator, ensure_retrieval_operation_schema
 from .retrieval_status import RetrievalServiceDockerReader, unknown_retrieval_service_snapshots
@@ -305,6 +306,7 @@ def create_app(
         app.state.example_runner = example_runner
     app.state.example_proxy = example_proxy or ExampleProxy(app.state.example_runner)
     app.include_router(operations_router)
+    app.include_router(provider_gateway_router)
     app.include_router(retrieval_operations_router)
     app.include_router(jobs_router)
     app.include_router(logs_router)
