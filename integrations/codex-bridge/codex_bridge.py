@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import hmac
+import io
 import ipaddress
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,6 +22,29 @@ from typing import Any
 MODEL_ID = "gpt-6-luna"
 MAX_PROMPT_CHARS = 48_000
 SCHEMA_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+class _DeadlineSocketReader(io.RawIOBase):
+    def __init__(self, connection: socket.socket, timeout_seconds: float) -> None:
+        self.connection = connection
+        self.deadline = time.monotonic() + timeout_seconds
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: bytearray) -> int:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("request read deadline exceeded")
+        self.connection.settimeout(remaining)
+        try:
+            data = self.connection.recv(len(buffer))
+        except TimeoutError as exc:
+            raise TimeoutError("request read deadline exceeded") from exc
+        if not data:
+            return 0
+        buffer[: len(data)] = data
+        return len(data)
 
 
 @dataclass(frozen=True)
@@ -31,7 +57,7 @@ class BridgeConfig:
     max_schema_bytes: int = 24_000
     max_output_bytes: int = 32_000
     max_concurrency: int = 2
-    request_read_timeout_seconds: float = 10.0
+    request_read_deadline_seconds: float = 10.0
 
     def __post_init__(self) -> None:
         if len(self.bearer_token) < 24:
@@ -40,8 +66,8 @@ class BridgeConfig:
             raise ValueError("bridge command, model, and positive timeout are required")
         if min(self.max_request_bytes, self.max_schema_bytes, self.max_output_bytes) < 1:
             raise ValueError("bridge size limits must be positive")
-        if self.max_concurrency < 1 or self.request_read_timeout_seconds <= 0:
-            raise ValueError("max_concurrency and request read timeout must be positive")
+        if self.max_concurrency < 1 or self.request_read_deadline_seconds <= 0:
+            raise ValueError("max_concurrency and request read deadline must be positive")
 
 
 def _json_schema(value: Any, depth: int = 0) -> bool:
@@ -393,6 +419,13 @@ def create_server(config: BridgeConfig, *, host: str = "127.0.0.1", port: int = 
         server_version = "CASES-Codex-Bridge"
         sys_version = ""
 
+        def setup(self) -> None:
+            super().setup()
+            self.rfile.close()
+            self.rfile = io.BufferedReader(
+                _DeadlineSocketReader(self.connection, config.request_read_deadline_seconds)
+            )
+
         def log_message(self, _format: str, *_args: Any) -> None:
             # Default access logs contain paths and can leak request metadata.
             return
@@ -411,6 +444,7 @@ def create_server(config: BridgeConfig, *, host: str = "127.0.0.1", port: int = 
             return hmac.compare_digest(supplied.encode(), expected.encode())
 
         def do_GET(self) -> None:
+            self.connection.settimeout(10.0)
             if self.path == "/health":
                 self.send_json(200, {"status": "ok"})
             elif self.path == "/v1/models" and self.authorized():
@@ -424,6 +458,7 @@ def create_server(config: BridgeConfig, *, host: str = "127.0.0.1", port: int = 
                 self.send_json(404, {"error": {"message": "Not found", "type": "not_found"}})
 
         def do_POST(self) -> None:
+            self.connection.settimeout(10.0)
             if not self.authorized():
                 self.send_json(401, {"error": {"message": "Unauthorized", "type": "authentication_error"}})
                 return
@@ -436,11 +471,12 @@ def create_server(config: BridgeConfig, *, host: str = "127.0.0.1", port: int = 
                 return
             try:
                 request_bytes = self.rfile.read(int(length))
+                self.connection.settimeout(10.0)
                 document = json.loads(request_bytes)
                 if not isinstance(document, dict):
                     raise TypeError("request must be an object")
                 system, user, _name, schema, max_tokens = _request_fields(document, config)
-            except TimeoutError:
+            except OSError:
                 self.close_connection = True
                 return
             except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -475,11 +511,6 @@ def create_server(config: BridgeConfig, *, host: str = "127.0.0.1", port: int = 
 
     class BoundedHTTPServer(ThreadingHTTPServer):
         daemon_threads = True
-
-        def get_request(self):
-            request, client_address = super().get_request()
-            request.settimeout(config.request_read_timeout_seconds)
-            return request, client_address
 
         def process_request(self, request, client_address):
             if not request_slots.acquire(blocking=False):

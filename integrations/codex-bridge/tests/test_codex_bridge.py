@@ -82,7 +82,7 @@ def test_bridge_bind_address_must_be_loopback_or_private():
 
 
 def test_stalled_http_clients_release_bridge_slots(config):
-    config = replace(config, max_concurrency=2, request_read_timeout_seconds=0.15)
+    config = replace(config, max_concurrency=2, request_read_deadline_seconds=0.15)
     server = create_server(config, port=0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -109,6 +109,51 @@ def test_stalled_http_clients_release_bridge_slots(config):
             connection.sendall(body_headers)
             stalled.append(connection)
         time.sleep(0.4)
+        assert request(f"http://127.0.0.1:{server.server_port}", "/health")[1] == {"status": "ok"}
+    finally:
+        for connection in stalled:
+            connection.close()
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_trickling_http_clients_hit_total_request_deadline(config):
+    config = replace(config, max_concurrency=2, request_read_deadline_seconds=1.0)
+    server = create_server(config, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    stalled = []
+    try:
+        address = ("127.0.0.1", server.server_port)
+        for _ in range(config.max_concurrency * 2):
+            connection = socket.create_connection(address, timeout=2)
+            connection.sendall(b"G")
+            stalled.append(connection)
+        for byte in (b"E", b"T", b" ", b"/health", b" HTTP/1.1"):
+            time.sleep(0.15)
+            for connection in stalled:
+                connection.sendall(byte)
+        time.sleep(0.35)  # Last-byte idle time is below 1s; only the total deadline frees slots.
+        assert request(f"http://127.0.0.1:{server.server_port}", "/health")[1] == {"status": "ok"}
+        for connection in stalled:
+            connection.close()
+        stalled.clear()
+
+        body_headers = (
+            b"POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            b"Content-Length: 100\r\n"
+            b"Authorization: Bearer a-strong-test-token-1234567890\r\n\r\n{"
+        )
+        for _ in range(config.max_concurrency * 2):
+            connection = socket.create_connection(address, timeout=2)
+            connection.sendall(body_headers)
+            stalled.append(connection)
+        for _ in range(6):
+            time.sleep(0.12)
+            for connection in stalled:
+                connection.sendall(b"x")
+        time.sleep(0.35)
         assert request(f"http://127.0.0.1:{server.server_port}", "/health")[1] == {"status": "ok"}
     finally:
         for connection in stalled:

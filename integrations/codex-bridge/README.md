@@ -15,7 +15,7 @@ Set a new bridge bearer token in the current PowerShell session without echoing 
 
 The signed-in Codex CLI must already be authenticated for this Windows user. Keep this process running while Luna is enabled. To find the bind address, after starting the gateway with Luna disabled, run `docker exec ddu-gateway python -c "import socket; print(socket.gethostbyname('host.docker.internal'))"`. Confirm the returned address is assigned to a Docker Desktop/WSL private adapter with `Get-NetIPAddress -AddressFamily IPv4`. Do not use a public or ordinary LAN interface address. Keep Windows Firewall enabled and allow the bridge port only on the Docker private adapter/profile. If the internal address is not assigned to a private Windows adapter, leave Luna disabled until the network path is configured safely.
 
-The bridge requires bearer auth for models and completions. It never accepts a caller-supplied URL or shell command. Its loopback default remains available for local-only use; the Docker deployment override is a private-interface bind because the gateway reaches the host through `host.docker.internal`.
+The bridge requires bearer auth for models and completions. It never accepts a caller-supplied URL or shell command. Request-line, headers, and body reads share a 10-second total deadline; completion processing starts after that read deadline is canceled. Its loopback default remains available for local-only use; the Docker deployment override is a private-interface bind because the gateway reaches the host through `host.docker.internal`.
 
 Stop the foreground bridge with `Ctrl+C`. Confirm that the loopback listener is gone before starting it again:
 
