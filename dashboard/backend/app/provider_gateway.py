@@ -6,7 +6,7 @@ from typing import Annotated, Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StrictBool
 
 from app.auth import AuthSession, require_csrf, require_session
 
@@ -17,7 +17,8 @@ GATEWAY_URL = "http://127.0.0.1:18766"
 
 class LunaToggle(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    enabled: bool
+    enabled: StrictBool
+    cloud_consent: StrictBool = False
 
 
 def _admin_token() -> str | None:
@@ -69,4 +70,17 @@ async def set_luna(
     body: LunaToggle,
     _session: Annotated[AuthSession, Depends(require_csrf)],
 ) -> dict[str, Any]:
-    return await _gateway("PUT", "/admin/v1/providers/gpt6_luna_high", body=body.model_dump())
+    if body.enabled and not body.cloud_consent:
+        raise HTTPException(422, "Explicit cloud data consent is required to enable GPT-6 Luna")
+    if body.enabled:
+        status = await _gateway("GET", "/admin/v1/providers")
+        providers = status.get("providers")
+        luna = next(
+            (item for item in providers if isinstance(item, dict) and item.get("id") == "codex_cli"),
+            None,
+        ) if isinstance(providers, list) else None
+        if not isinstance(luna, dict) or luna.get("configured") is not True or luna.get("ready") is not True:
+            raise HTTPException(409, "GPT-6 Luna is not configured and ready")
+    return await _gateway(
+        "PUT", "/admin/v1/providers/gpt6_luna_high", body={"enabled": body.enabled}
+    )

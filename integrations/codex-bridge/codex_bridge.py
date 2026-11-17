@@ -1,8 +1,9 @@
-"""Loopback-only, bearer-protected Codex CLI bridge for structured CASES output."""
+"""Private-address, bearer-protected Codex CLI bridge for structured output."""
 
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -30,6 +31,7 @@ class BridgeConfig:
     max_schema_bytes: int = 24_000
     max_output_bytes: int = 32_000
     max_concurrency: int = 2
+    request_read_timeout_seconds: float = 10.0
 
     def __post_init__(self) -> None:
         if len(self.bearer_token) < 24:
@@ -38,8 +40,8 @@ class BridgeConfig:
             raise ValueError("bridge command, model, and positive timeout are required")
         if min(self.max_request_bytes, self.max_schema_bytes, self.max_output_bytes) < 1:
             raise ValueError("bridge size limits must be positive")
-        if self.max_concurrency < 1:
-            raise ValueError("max_concurrency must be positive")
+        if self.max_concurrency < 1 or self.request_read_timeout_seconds <= 0:
+            raise ValueError("max_concurrency and request read timeout must be positive")
 
 
 def _json_schema(value: Any, depth: int = 0) -> bool:
@@ -371,9 +373,19 @@ def _run_codex(
         return output
 
 
+def validate_bind_host(host: str) -> None:
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError as exc:
+        raise ValueError("Codex bridge bind host must be a private IP address") from exc
+    if not address.is_loopback and (
+        not address.is_private or address.is_unspecified or address.is_multicast or address.is_reserved
+    ):
+        raise ValueError("Codex bridge may bind only to loopback or a private IP address")
+
+
 def create_server(config: BridgeConfig, *, host: str = "127.0.0.1", port: int = 18765):
-    if host != "127.0.0.1":
-        raise ValueError("Codex bridge must bind to 127.0.0.1")
+    validate_bind_host(host)
     slots = threading.BoundedSemaphore(config.max_concurrency)
     request_slots = threading.BoundedSemaphore(config.max_concurrency * 2)
 
@@ -423,10 +435,14 @@ def create_server(config: BridgeConfig, *, host: str = "127.0.0.1", port: int = 
                 self.send_json(413, {"error": {"message": "Request too large", "type": "invalid_request_error"}})
                 return
             try:
-                document = json.loads(self.rfile.read(int(length)))
+                request_bytes = self.rfile.read(int(length))
+                document = json.loads(request_bytes)
                 if not isinstance(document, dict):
                     raise TypeError("request must be an object")
                 system, user, _name, schema, max_tokens = _request_fields(document, config)
+            except TimeoutError:
+                self.close_connection = True
+                return
             except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 self.send_json(400, {"error": {"message": str(exc), "type": "invalid_request_error"}})
                 return
@@ -459,6 +475,11 @@ def create_server(config: BridgeConfig, *, host: str = "127.0.0.1", port: int = 
 
     class BoundedHTTPServer(ThreadingHTTPServer):
         daemon_threads = True
+
+        def get_request(self):
+            request, client_address = super().get_request()
+            request.settimeout(config.request_read_timeout_seconds)
+            return request, client_address
 
         def process_request(self, request, client_address):
             if not request_slots.acquire(blocking=False):
@@ -515,7 +536,8 @@ def main() -> None:
             bearer_token=token,
             command=command,
             timeout_seconds=float(os.environ.get("LOCALAI_CODEX_TIMEOUT_SECONDS") or os.environ.get("CASES_CODEX_TIMEOUT_SECONDS", "210")),
-        )
+        ),
+        host=os.environ.get("LOCALAI_CODEX_BRIDGE_HOST", "127.0.0.1"),
     )
     try:
         server.serve_forever()

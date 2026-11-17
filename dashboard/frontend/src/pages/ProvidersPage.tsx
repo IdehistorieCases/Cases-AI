@@ -37,7 +37,7 @@ export function ProvidersPage({ csrfToken, onSessionExpired }: {
     setBusy(true);
     setError(null);
     try {
-      await setLunaEnabled(!luna.enabled, csrfToken);
+      await setLunaEnabled(!luna.enabled, csrfToken, cloudAcknowledged);
       setCloudAcknowledged(false);
       await refresh();
     } catch (cause) {
@@ -76,7 +76,7 @@ export function ProvidersPage({ csrfToken, onSessionExpired }: {
       <p>Model alias <code>gpt-6-luna</code>. Enabling sends prompts and supplied conversation context to OpenAI through the signed-in Codex CLI. Do not include information you do not want sent to the cloud.</p>
       <dl className="provider-facts"><dt>Configured</dt><dd>{luna?.configured ? "Yes" : "No"}</dd><dt>Enabled</dt><dd>{luna?.enabled ? "Yes" : "No"}</dd><dt>Ready</dt><dd>{luna?.ready ? "Yes" : "No"}</dd><dt>Requests</dt><dd>{luna?.requests ?? "—"}</dd><dt>Failures</dt><dd>{luna?.failures ?? "—"}</dd><dt>Average latency</dt><dd>{averageLatency(luna)}</dd><dt>Health-check latency</dt><dd>{healthLatency(luna)}</dd><dt>Last health check</dt><dd>{lastHealthCheck(luna)}</dd><dt>Latest error</dt><dd>{luna?.error_class ?? "None"}</dd></dl>
       {!luna?.enabled && <label className="provider-consent"><input type="checkbox" checked={cloudAcknowledged} onChange={(event) => setCloudAcknowledged(event.target.checked)} /> I understand prompts and context may be sent to OpenAI.</label>}
-      <button className="primary-button" disabled={busy || !luna?.configured || (!luna.enabled && !cloudAcknowledged)} onClick={() => void toggle()} type="button">
+      <button className="primary-button" disabled={busy || !luna?.configured || (!luna.enabled && (!luna.ready || !cloudAcknowledged))} onClick={() => void toggle()} type="button">
         {busy ? "Saving…" : luna?.enabled ? "Disable GPT-6 Luna" : "Enable GPT-6 Luna"}
       </button>
     </section>

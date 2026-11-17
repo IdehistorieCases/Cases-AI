@@ -33,12 +33,30 @@ describe("ProvidersPage", () => {
   expect(enable.disabled).toBe(true);
   fireEvent.click(screen.getByRole("checkbox"));
   fireEvent.click(enable);
-  await waitFor(() => expect(api.setLunaEnabled).toHaveBeenCalledWith(true,"csrf-test"));
+  await waitFor(() => expect(api.setLunaEnabled).toHaveBeenCalledWith(true,"csrf-test",true));
  });
  it("shows gateway unavailable state", async () => {
   vi.mocked(api.getProviders).mockRejectedValue(new api.ApiRequestError(503));
   render(<ProvidersPage csrfToken="csrf-test" onSessionExpired={() => {}} />);
   expect((await screen.findByRole("alert")).textContent).toContain("Inference gateway is not configured or is offline.");
+ });
+ it("does not offer the Luna enable action until its live probe is ready", async () => {
+  vi.mocked(api.getProviders).mockResolvedValue({providers:[
+   {id:"local_qwen",model:"ddu-narrator",configured:true,enabled:true,ready:true,failures:0,requests:0,last_failure:null},
+   {id:"codex_cli",model:"gpt-6-luna",configured:true,enabled:false,ready:false,failures:0,requests:0,last_failure:null}
+  ].map((provider) => ({
+   ...provider,
+   last_health_check:null,
+   health_latency_ms:null,
+   last_latency_ms:null,
+   latency_samples:0,
+   total_latency_ms:0,
+   error_class:null,
+  }))} as unknown as api.ProviderSnapshot);
+  render(<ProvidersPage csrfToken="csrf-test" onSessionExpired={() => {}} />);
+  fireEvent.click(await screen.findByRole("checkbox"));
+  expect((screen.getByRole("button",{name:"Enable GPT-6 Luna"}) as HTMLButtonElement).disabled).toBe(true);
+  expect(api.setLunaEnabled).not.toHaveBeenCalled();
  });
  it("expires the dashboard session when a provider toggle returns 401", async () => {
   const expired = vi.fn();

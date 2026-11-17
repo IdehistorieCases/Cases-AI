@@ -4,7 +4,11 @@ import httpx
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from services.inference_gateway.app import create_app
+from services.inference_gateway.app import (
+    bridge_token_valid,
+    client_admin_tokens_valid,
+    create_app,
+)
 
 CLIENT = "client-token-" + "c" * 24
 ADMIN = "admin-token-" + "a" * 24
@@ -36,10 +40,11 @@ def setup(tmp_path, *, luna_enabled=None):
         if request.url.path == "/v1/models":
             model = "gpt-6-luna" if request.url.host == "host.docker.internal" else "ddu-narrator"
             return httpx.Response(200, json={"data": [{"id": model}]})
-        return httpx.Response(200, json={
-            "model": "gpt-6-luna" if request.url.host == "host.docker.internal" else "ddu-narrator",
-            "choices": [{"message": {"content": "{\"ok\":true}"}}],
-        })
+        model = "gpt-6-luna" if request.url.host == "host.docker.internal" else "ddu-narrator"
+        payload = {"model": model, "choices": [{"message": {"content": "{\"ok\":true}"}}]}
+        if model == "gpt-6-luna":
+            payload.update(provider="codex_cli", reasoning_effort="high")
+        return httpx.Response(200, json=payload)
     transport = httpx.MockTransport(upstream)
     http = httpx.AsyncClient(transport=transport)
     app = create_app(client_token=CLIENT, admin_token=ADMIN, bridge_token=BRIDGE,
@@ -85,6 +90,58 @@ def test_reused_tokens_do_not_cross_authentication_boundaries(tmp_path):
     assert client.get("/admin/v1/providers", headers=shared).status_code == 401
 
 
+def test_shipped_placeholder_tokens_are_not_accepted(tmp_path):
+    example_values = (
+        "replace-with-random-client-token-at-least-24-chars",
+        "replace-with-random-admin-token-at-least-24-chars",
+        "replace-with-random-bridge-token-at-least-24-chars",
+    )
+    app = create_app(
+        client_token=example_values[0],
+        admin_token=example_values[1],
+        bridge_token=example_values[2],
+        state_path=tmp_path / "state.json",
+    )
+    client = TestClient(app)
+    assert client.get("/v1/models", headers={"Authorization": f"Bearer {example_values[0]}"}).status_code == 401
+    assert client.get("/admin/v1/providers", headers={"Authorization": f"Bearer {example_values[1]}"}).status_code == 401
+    assert client_admin_tokens_valid(example_values[0], example_values[1]) is False
+    assert bridge_token_valid(*example_values) is False
+
+
+def test_missing_bridge_token_disables_only_luna(tmp_path):
+    def upstream(request):
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "ddu-narrator"}]})
+        return httpx.Response(200, json={
+            "model": "ddu-narrator",
+            "choices": [{"message": {"content": "{\"ok\":true}"}}],
+        })
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(
+        client_token=CLIENT,
+        admin_token=ADMIN,
+        bridge_token="replace-with-random-bridge-token-at-least-24-chars",
+        state_path=tmp_path / "state.json",
+        upstream_client=http,
+    )
+    app.state.providers.enabled = True
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {CLIENT}"}
+    assert client.get("/v1/models", headers=headers).json()["data"] == [
+        {"id": "ddu-narrator", "object": "model"}
+    ]
+    assert client.post(
+        "/v1/chat/completions", headers=headers, json=completion_request()
+    ).status_code == 200
+    assert client.post(
+        "/v1/chat/completions", headers=headers, json=completion_request("gpt-6-luna")
+    ).status_code == 503
+    status = client.get("/admin/v1/providers", headers={"Authorization": f"Bearer {ADMIN}"})
+    assert status.json()["providers"][1]["configured"] is False
+
+
 def test_model_dispatch_and_bridge_auth(tmp_path):
     app, _ = setup(tmp_path, luna_enabled=True)
     client = TestClient(app)
@@ -103,6 +160,86 @@ def test_model_dispatch_and_bridge_auth(tmp_path):
     assert response.headers["x-provider-id"] == "codex_cli"
     assert response.headers["x-reasoning-effort"] == "high"
     assert seen == [f"Bearer {BRIDGE}", f"Bearer {BRIDGE}"]
+
+
+def test_chat_options_are_allowlisted_and_qwen_template_option_is_bounded(tmp_path):
+    app, http = setup(tmp_path)
+    client = TestClient(app)
+    sent = []
+    original_request = http._transport.handle_async_request
+
+    async def inspect_request(request):
+        if request.url.path == "/v1/chat/completions":
+            sent.append(json.loads(request.content))
+        return await original_request(request)
+
+    http._transport.handle_async_request = inspect_request
+    headers = {"Authorization": f"Bearer {CLIENT}"}
+    for extra in ({"n": 8}, {"top_p": 0.01}, {"max_completion_tokens": 100_000}):
+        payload = completion_request()
+        payload.update(extra)
+        assert client.post("/v1/chat/completions", headers=headers, json=payload).status_code == 422
+
+    qwen = completion_request()
+    qwen["chat_template_kwargs"] = {"enable_thinking": False}
+    assert client.post("/v1/chat/completions", headers=headers, json=qwen).status_code == 200
+    assert sent[-1]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert set(sent[-1]) == {
+        "model", "stream", "messages", "response_format", "max_tokens", "temperature", "chat_template_kwargs"
+    }
+
+    luna = completion_request("gpt-6-luna")
+    luna["chat_template_kwargs"] = {"enable_thinking": False}
+    app.state.providers.enabled = True
+    assert client.post("/v1/chat/completions", headers=headers, json=luna).status_code == 422
+
+
+def test_completion_admission_rejects_before_reading_another_body(tmp_path, monkeypatch):
+    app, _ = setup(tmp_path)
+    client = TestClient(app)
+    state = app.state.providers
+    state.max_admitted_requests = 1
+    state.admitted_requests = 1
+    read = False
+
+    async def observe_body(_request):
+        nonlocal read
+        read = True
+        return b"{}"
+
+    monkeypatch.setattr("services.inference_gateway.app._read_limited_body", observe_body)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {CLIENT}"},
+        json=completion_request(),
+    )
+    assert response.status_code == 503
+    assert read is False
+    assert state.admitted_requests == 1
+
+
+def test_luna_upstream_provenance_is_verified_before_gateway_headers(tmp_path):
+    def upstream(request):
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "gpt-6-luna"}]})
+        return httpx.Response(200, json={
+            "model": "gpt-6-luna",
+            "provider": "other_provider",
+            "reasoning_effort": "low",
+            "choices": [{"message": {"content": "{\"ok\":true}"}}],
+        })
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(client_token=CLIENT, admin_token=ADMIN, bridge_token=BRIDGE,
+                     state_path=tmp_path / "state.json", upstream_client=http)
+    app.state.providers.enabled = True
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {CLIENT}"},
+        json=completion_request("gpt-6-luna"),
+    )
+    assert response.status_code == 502
+    assert "x-provider-id" not in response.headers
 
 
 def test_disabled_luna_never_falls_back_and_toggle_persists(tmp_path):

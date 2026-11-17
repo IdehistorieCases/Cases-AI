@@ -34,7 +34,7 @@ services:
     build:
       context: ../../services/inference_gateway
     container_name: ddu-gateway-admin
-    command: ["uvicorn", "admin_proxy:app", "--host", "0.0.0.0", "--port", "8080"]
+    command: ["uvicorn", "admin_proxy:app", "--host", "0.0.0.0", "--port", "8080", "--limit-concurrency", "16"]
     restart: unless-stopped
     depends_on:
       inference-gateway:

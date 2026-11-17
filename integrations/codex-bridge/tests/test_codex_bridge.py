@@ -1,14 +1,17 @@
 import json
+import socket
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from codex_bridge import BridgeConfig, _matches_schema, create_server
+from codex_bridge import BridgeConfig, _matches_schema, create_server, validate_bind_host
 
 
 @pytest.fixture
@@ -67,6 +70,52 @@ def test_bridge_requires_bearer_and_returns_codex_model(bridge):
     assert status == 401
     assert request(bridge, "/health")[1] == {"status": "ok"}
     assert request(bridge, "/v1/models")[1]["data"][0]["id"] == "gpt-6-luna"
+
+
+def test_bridge_bind_address_must_be_loopback_or_private():
+    validate_bind_host("127.0.0.1")
+    validate_bind_host("192.168.65.254")
+    with pytest.raises(ValueError, match="private IP"):
+        validate_bind_host("0.0.0.0")
+    with pytest.raises(ValueError, match="private IP"):
+        validate_bind_host("8.8.8.8")
+
+
+def test_stalled_http_clients_release_bridge_slots(config):
+    config = replace(config, max_concurrency=2, request_read_timeout_seconds=0.15)
+    server = create_server(config, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    stalled = []
+    try:
+        address = ("127.0.0.1", server.server_port)
+        for _ in range(config.max_concurrency * 2):
+            connection = socket.create_connection(address, timeout=2)
+            connection.sendall(b"GET /health HTTP/1.1\r\nHost: ")
+            stalled.append(connection)
+        time.sleep(0.4)
+        assert request(f"http://127.0.0.1:{server.server_port}", "/health")[1] == {"status": "ok"}
+        for connection in stalled:
+            connection.close()
+        stalled.clear()
+
+        body_headers = (
+            b"POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            b"Content-Length: 100\r\n"
+            b"Authorization: Bearer a-strong-test-token-1234567890\r\n\r\n{"
+        )
+        for _ in range(config.max_concurrency * 2):
+            connection = socket.create_connection(address, timeout=2)
+            connection.sendall(body_headers)
+            stalled.append(connection)
+        time.sleep(0.4)
+        assert request(f"http://127.0.0.1:{server.server_port}", "/health")[1] == {"status": "ok"}
+    finally:
+        for connection in stalled:
+            connection.close()
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
 
 
 def test_bridge_reports_missing_codex_login_as_unavailable(config, tmp_path):

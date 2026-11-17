@@ -708,13 +708,17 @@ export function getProviders(): Promise<ProviderSnapshot> {
   return getJson<ProviderSnapshot>("/api/control/v1/providers");
 }
 
-export async function setLunaEnabled(enabled: boolean, csrfToken: string): Promise<{ enabled: boolean }> {
+export async function setLunaEnabled(
+  enabled: boolean,
+  csrfToken: string,
+  cloudConsent = false,
+): Promise<{ enabled: boolean }> {
   const response = await fetch("/api/control/v1/providers/gpt6_luna_high", {
     method: "PUT",
     headers: { Accept: "application/json", "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
     credentials: "same-origin",
     cache: "no-store",
-    body: JSON.stringify({ enabled }),
+    body: JSON.stringify({ enabled, cloud_consent: cloudConsent }),
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new ApiRequestError(response.status);

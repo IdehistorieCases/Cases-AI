@@ -14,7 +14,7 @@ def test_provider_routes_require_session_and_csrf(tmp_path, monkeypatch):
     calls = []
     async def fake_gateway(method, path, *, body=None):
         calls.append((method, path, body))
-        return {"providers": []} if method == "GET" else {"enabled": body["enabled"]}
+        return {"providers": [{"id": "codex_cli", "configured": True, "ready": True}]} if method == "GET" else {"enabled": body["enabled"]}
     monkeypatch.setattr(proxy, "_gateway", fake_gateway)
     c = client(tmp_path)
     assert c.get("/api/control/v1/providers").status_code == 401
@@ -24,9 +24,11 @@ def test_provider_routes_require_session_and_csrf(tmp_path, monkeypatch):
                        json_body={"enabled": True})
     assert denied.status_code == 403
     allowed = c.request("PUT", "/api/control/v1/providers/gpt6_luna_high",
-                        json_body={"enabled": True}, headers={"X-CSRF-Token": c.csrf_token or ""})
+                        json_body={"enabled": True, "cloud_consent": True},
+                        headers={"X-CSRF-Token": c.csrf_token or ""})
     assert allowed.status_code == 200
     assert calls == [("GET", "/admin/v1/providers", None),
+                     ("GET", "/admin/v1/providers", None),
                      ("PUT", "/admin/v1/providers/gpt6_luna_high", {"enabled": True})]
 
 
@@ -34,9 +36,43 @@ def test_provider_toggle_rejects_extra_fields(tmp_path):
     c = client(tmp_path)
     c.setup_admin()
     response = c.request("PUT", "/api/control/v1/providers/gpt6_luna_high",
-                         json_body={"enabled": True, "token": "leak"},
+                         json_body={"enabled": True, "cloud_consent": True, "token": "leak"},
                          headers={"X-CSRF-Token": c.csrf_token or ""})
     assert response.status_code == 422
+
+
+def test_provider_enable_requires_server_side_consent(tmp_path, monkeypatch):
+    import app.provider_gateway as proxy
+
+    calls = []
+    async def fake_gateway(method, path, *, body=None):
+        calls.append((method, path, body))
+        return {"providers": [{"id": "codex_cli", "configured": True, "ready": True}]}
+    monkeypatch.setattr(proxy, "_gateway", fake_gateway)
+    c = client(tmp_path)
+    c.setup_admin()
+    response = c.request("PUT", "/api/control/v1/providers/gpt6_luna_high",
+                         json_body={"enabled": True},
+                         headers={"X-CSRF-Token": c.csrf_token or ""})
+    assert response.status_code == 422
+    assert calls == []
+
+
+def test_provider_enable_requires_live_readiness_server_side(tmp_path, monkeypatch):
+    import app.provider_gateway as proxy
+
+    calls = []
+    async def fake_gateway(method, path, *, body=None):
+        calls.append((method, path, body))
+        return {"providers": [{"id": "codex_cli", "configured": True, "ready": False}]}
+    monkeypatch.setattr(proxy, "_gateway", fake_gateway)
+    c = client(tmp_path)
+    c.setup_admin()
+    response = c.request("PUT", "/api/control/v1/providers/gpt6_luna_high",
+                         json_body={"enabled": True, "cloud_consent": True},
+                         headers={"X-CSRF-Token": c.csrf_token or ""})
+    assert response.status_code == 409
+    assert calls == [("GET", "/admin/v1/providers", None)]
 
 
 def test_gateway_admin_token_stays_server_side_and_gateway_auth_failure_is_sanitized(

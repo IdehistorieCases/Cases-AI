@@ -13,9 +13,9 @@ from time import perf_counter
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 LOCAL_URL = "http://ddu-llm:8080"
 LUNA_URL = "http://host.docker.internal:18765"
@@ -28,7 +28,9 @@ MAX_SCHEMA_DEPTH = 16
 MAX_SCHEMA_NODES = 2048
 MAX_SCHEMA_BYTES = 24_000
 MAX_PROMPT_CHARS = 48_000
+MAX_ADMITTED_COMPLETIONS = 8
 SCHEMA_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+PLACEHOLDER_PREFIXES = ("replace-with-", "replace_with_", "change-me", "changeme")
 
 
 def _is_bounded_json(value: Any, *, max_depth: int, max_nodes: int) -> bool:
@@ -68,14 +70,31 @@ def _valid_response_format(value: Any) -> bool:
     )
 
 
+def _usable_token(token: str) -> bool:
+    return len(token) >= 24 and not token.lower().startswith(PLACEHOLDER_PREFIXES)
+
+
+def client_admin_tokens_valid(client_token: str, admin_token: str) -> bool:
+    return _usable_token(client_token) and _usable_token(admin_token) and client_token != admin_token
+
+
+def bridge_token_valid(client_token: str, admin_token: str, bridge_token: str) -> bool:
+    return (
+        client_admin_tokens_valid(client_token, admin_token)
+        and _usable_token(bridge_token)
+        and bridge_token not in {client_token, admin_token}
+    )
+
+
 class ChatRequest(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
     model: str
     stream: bool = False
     messages: list[dict[str, Any]] = Field(min_length=1, max_length=16)
     response_format: dict[str, Any]
     max_tokens: int = Field(default=2048, ge=1, le=8192)
     temperature: float = Field(default=0.2, ge=0, le=2)
+    chat_template_kwargs: dict[str, StrictBool] | None = None
 
     @field_validator("messages")
     @classmethod
@@ -84,6 +103,7 @@ class ChatRequest(BaseModel):
         for message in messages:
             if (
                 not isinstance(message, dict)
+                or set(message) != {"role", "content"}
                 or message.get("role") not in {"system", "user", "assistant"}
                 or not isinstance(message.get("content"), str)
                 or not message["content"].strip()
@@ -108,6 +128,8 @@ class ProviderState:
         self.enabled = enabled
         self.lock = asyncio.Lock()
         self.semaphore = asyncio.Semaphore(4)
+        self.max_admitted_requests = MAX_ADMITTED_COMPLETIONS
+        self.admitted_requests = 0
         self.counters: Counter[str] = Counter()
         self.failures = {"local_qwen": 0, "codex_cli": 0}
         self.last_failure = {"local_qwen": None, "codex_cli": None}
@@ -123,6 +145,15 @@ class ProviderState:
                 self.enabled = data["gpt6_luna_high_enabled"]
         except (OSError, ValueError, AttributeError):
             pass
+
+    def try_admit_request(self) -> bool:
+        if self.admitted_requests >= self.max_admitted_requests:
+            return False
+        self.admitted_requests += 1
+        return True
+
+    def release_admitted_request(self) -> None:
+        self.admitted_requests -= 1
 
     async def set_enabled(self, enabled: bool) -> None:
         async with self.lock:
@@ -233,10 +264,8 @@ def create_app(
     client_token = client_token if client_token is not None else os.getenv("GATEWAY_CLIENT_TOKEN", "")
     admin_token = admin_token if admin_token is not None else os.getenv("GATEWAY_ADMIN_TOKEN", "")
     bridge_token = bridge_token if bridge_token is not None else os.getenv("BRIDGE_TOKEN", "")
-    tokens_are_independent = (
-        min(map(len, (client_token, admin_token, bridge_token))) >= 24
-        and len({client_token, admin_token, bridge_token}) == 3
-    )
+    client_admin_valid = client_admin_tokens_valid(client_token, admin_token)
+    luna_credentials_valid = bridge_token_valid(client_token, admin_token, bridge_token)
     state = ProviderState(
         state_path or Path(os.getenv("GATEWAY_STATE_PATH", "/data/providers.json")),
         os.getenv("LUNA_ENABLED", "false").lower() == "true",
@@ -247,10 +276,22 @@ def create_app(
 
     def authorized(value: str | None, expected: str) -> bool:
         return (
-            tokens_are_independent
+            client_admin_valid
             and value is not None
             and hmac.compare_digest(value.encode(), f"Bearer {expected}".encode())
         )
+
+    async def admit_completion(
+        authorization: str | None = Header(default=None),
+    ):
+        if not authorized(authorization, client_token):
+            raise HTTPException(401, "Unauthorized")
+        if not state.try_admit_request():
+            raise HTTPException(503, "Gateway is busy")
+        try:
+            yield
+        finally:
+            state.release_admitted_request()
 
     async def request_upstream(
         method: str,
@@ -290,6 +331,11 @@ def create_app(
         started = perf_counter()
         ready = False
         error_class: str | None = None
+        if provider == "codex_cli" and not luna_credentials_valid:
+            await state.record_health(
+                provider, ready=False, latency_ms=0, error_class="not_configured"
+            )
+            return False
         try:
             async with state.semaphore:
                 response = await request_upstream(
@@ -330,7 +376,7 @@ def create_app(
         result = []
         if await probe("ddu-narrator"):
             result.append({"id": "ddu-narrator", "object": "model"})
-        if state.enabled and await probe("gpt-6-luna"):
+        if state.enabled and luna_credentials_valid and await probe("gpt-6-luna"):
             result.append({"id": "gpt-6-luna", "object": "model"})
         return {"object": "list", "data": result}
 
@@ -357,7 +403,7 @@ def create_app(
                 {
                     "id": "codex_cli",
                     "model": "gpt-6-luna",
-                    "configured": tokens_are_independent,
+                    "configured": luna_credentials_valid,
                     "enabled": state.enabled,
                     "ready": luna_ready,
                     **luna_metrics,
@@ -380,15 +426,15 @@ def create_app(
             raise HTTPException(422, "Invalid request") from None
         if not isinstance(body, dict) or set(body) != {"enabled"} or not isinstance(body["enabled"], bool):
             raise HTTPException(422, "Invalid request")
+        if body["enabled"] and not luna_credentials_valid:
+            raise HTTPException(503, "Provider is not configured")
         await state.set_enabled(body["enabled"])
         return {"enabled": state.enabled}
 
     @app.post("/v1/chat/completions")
     async def completions(
-        request: Request, authorization: str | None = Header(default=None)
+        request: Request, _admitted: None = Depends(admit_completion)
     ) -> JSONResponse:
-        if not authorized(authorization, client_token):
-            raise HTTPException(401, "Unauthorized")
         raw = await _read_limited_body(request)
         try:
             document = json.loads(raw)
@@ -401,10 +447,18 @@ def create_app(
             raise HTTPException(422, "Invalid request") from None
         if body.stream or body.model not in {"ddu-narrator", "gpt-6-luna"}:
             raise HTTPException(422, "Unsupported model or request option")
+        if body.chat_template_kwargs is not None and (
+            body.model != "ddu-narrator"
+            or set(body.chat_template_kwargs) != {"enable_thinking"}
+            or type(body.chat_template_kwargs["enable_thinking"]) is not bool
+        ):
+            raise HTTPException(422, "Unsupported model or request option")
         provider = "local_qwen" if body.model == "ddu-narrator" else "codex_cli"
         url = LOCAL_URL if provider == "local_qwen" else LUNA_URL
         headers = {"Content-Type": "application/json"}
         if provider == "codex_cli":
+            if not luna_credentials_valid:
+                raise HTTPException(503, "Provider is not configured")
             if not state.enabled:
                 raise HTTPException(503, "Provider is disabled")
             headers["Authorization"] = f"Bearer {bridge_token}"
@@ -412,12 +466,14 @@ def create_app(
             if state.error_class[provider] == "timeout":
                 raise HTTPException(504, "Provider health check timed out")
             raise HTTPException(503, "Provider is unavailable")
+        forward_document = body.model_dump(exclude_none=True)
+        forward_body = json.dumps(forward_document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         async with state.semaphore:
             started = perf_counter()
             error_class: str | None = None
             try:
                 response = await request_upstream(
-                    "POST", url + "/v1/chat/completions", headers=headers, content=raw
+                    "POST", url + "/v1/chat/completions", headers=headers, content=forward_body
                 )
                 if response.status_code == 401:
                     error_class = "invalid_credentials"
@@ -430,6 +486,12 @@ def create_app(
                 payload = response.json()
                 if not isinstance(payload, dict) or payload.get("model") != body.model:
                     error_class = "model_mismatch"
+                    raise ValueError()
+                if provider == "codex_cli" and payload.get("provider") != "codex_cli":
+                    error_class = "provider_mismatch"
+                    raise ValueError()
+                if provider == "codex_cli" and payload.get("reasoning_effort") != "high":
+                    error_class = "reasoning_effort_mismatch"
                     raise ValueError()
                 choices = payload.get("choices")
                 if (
