@@ -10,7 +10,7 @@ The inference-gateway joins the existing external ddu_inference_bus and has no h
 
     docker compose --env-file deploy/inference-gateway/.env -f deploy/inference-gateway/compose.yaml up -d --build
 
-4. Follow the bridge README to resolve `host.docker.internal` from `ddu-gateway`, verify that exact address is assigned to a private Docker Desktop/WSL adapter on Windows, set `LOCALAI_CODEX_BRIDGE_HOST`, and start the bridge. The bridge's default loopback bind is for local-only use; it cannot receive connections addressed to the host's separate Docker interface IP. Keep Windows Firewall enabled and scope access to the Docker private adapter/profile.
+4. Follow the bridge README and start the bridge on loopback. If a legacy bridge already owns port 18765, set `LOCALAI_CODEX_BRIDGE_PORT=18767` and `LUNA_BRIDGE_PORT=18767` so both can run during rollback. Verify `host.docker.internal:<port>` is reachable from the gateway container before enabling Luna.
 5. Query `/health`, authenticated `/v1/models`, and dashboard Providers. Confirm Qwen and the bridge are ready before enabling Luna. Do not send a completion until the cloud disclosure is acknowledged in the dashboard.
 
 Set CASES or another container on `ddu_inference_bus` to `http://ddu-gateway:8080` and the `GATEWAY_CLIENT_TOKEN`; never give it either admin or bridge token. The loopback host port `http://127.0.0.1:18766` serves only the admin proxy. Dashboard controls require the normal administrator login and CSRF session.

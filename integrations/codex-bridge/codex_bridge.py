@@ -410,6 +410,16 @@ def validate_bind_host(host: str) -> None:
         raise ValueError("Codex bridge may bind only to loopback or a private IP address")
 
 
+def bridge_port_from_env(port: str | None = None) -> int:
+    try:
+        value = int(port or "18765")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("LOCALAI_CODEX_BRIDGE_PORT must be an integer TCP port") from exc
+    if not 1024 <= value <= 65535:
+        raise ValueError("LOCALAI_CODEX_BRIDGE_PORT must be between 1024 and 65535")
+    return value
+
+
 def create_server(config: BridgeConfig, *, host: str = "127.0.0.1", port: int = 18765):
     validate_bind_host(host)
     slots = threading.BoundedSemaphore(config.max_concurrency)
@@ -569,6 +579,7 @@ def main() -> None:
             timeout_seconds=float(os.environ.get("LOCALAI_CODEX_TIMEOUT_SECONDS") or os.environ.get("CASES_CODEX_TIMEOUT_SECONDS", "210")),
         ),
         host=os.environ.get("LOCALAI_CODEX_BRIDGE_HOST", "127.0.0.1"),
+        port=bridge_port_from_env(os.environ.get("LOCALAI_CODEX_BRIDGE_PORT")),
     )
     try:
         server.serve_forever()

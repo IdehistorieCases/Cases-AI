@@ -11,7 +11,13 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from codex_bridge import BridgeConfig, _matches_schema, create_server, validate_bind_host
+from codex_bridge import (
+    BridgeConfig,
+    _matches_schema,
+    bridge_port_from_env,
+    create_server,
+    validate_bind_host,
+)
 
 
 @pytest.fixture
@@ -63,6 +69,14 @@ def request(bridge, path, body=None, token="a-strong-test-token-1234567890"):
             return response.status, json.loads(response.read())
     except urllib.error.HTTPError as error:
         return error.code, json.loads(error.read())
+
+
+def test_bridge_port_from_env_supports_parallel_rollout_and_rejects_invalid_values():
+    assert bridge_port_from_env() == 18765
+    assert bridge_port_from_env("18767") == 18767
+    for value in ("not-a-port", "0", "65536"):
+        with pytest.raises(ValueError):
+            bridge_port_from_env(value)
 
 
 def test_bridge_requires_bearer_and_returns_codex_model(bridge):

@@ -8,6 +8,7 @@ services:
       GATEWAY_CLIENT_TOKEN: ${GATEWAY_CLIENT_TOKEN:?set GATEWAY_CLIENT_TOKEN}
       GATEWAY_ADMIN_TOKEN: ${GATEWAY_ADMIN_TOKEN:?set GATEWAY_ADMIN_TOKEN}
       BRIDGE_TOKEN: ${BRIDGE_TOKEN:?set BRIDGE_TOKEN}
+      LUNA_BRIDGE_PORT: ${LUNA_BRIDGE_PORT:-18765}
       GATEWAY_STATE_PATH: /data/providers.json
       LUNA_ENABLED: ${LUNA_ENABLED:-false}
     extra_hosts:
@@ -56,6 +57,8 @@ networks:
   ddu_inference_bus:
     external: true
   gateway_admin_bus:
-    internal: true
+    ipam:
+      config:
+        - subnet: 10.255.254.0/24
 volumes:
   gateway-state:

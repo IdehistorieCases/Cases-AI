@@ -1,6 +1,7 @@
 import json
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
@@ -8,6 +9,7 @@ from services.inference_gateway.app import (
     bridge_token_valid,
     client_admin_tokens_valid,
     create_app,
+    luna_bridge_url,
 )
 
 CLIENT = "client-token-" + "c" * 24
@@ -33,6 +35,54 @@ def completion_request(model="ddu-narrator"):
             },
         },
     }
+
+
+def test_luna_bridge_port_is_configurable_but_host_remains_fixed():
+    assert luna_bridge_url() == "http://host.docker.internal:18765"
+    assert luna_bridge_url("18767") == "http://host.docker.internal:18767"
+    for value in ("not-a-port", "0", "65536"):
+        with pytest.raises(ValueError):
+            luna_bridge_url(value)
+
+
+@pytest.mark.parametrize(
+    ("choices", "expected_failure"),
+    [
+        ([], "missing_choices"),
+        ([{}], "missing_message"),
+        ([{"message": {"content": None}}], "non_text_content"),
+    ],
+)
+def test_malformed_upstream_shapes_report_safe_failure_class(
+    tmp_path, choices, expected_failure
+):
+    def upstream(request):
+        if request.url.path == "/v1/models":
+            model = "gpt-6-luna" if request.url.host == "host.docker.internal" else "ddu-narrator"
+            return httpx.Response(200, json={"data": [{"id": model}]})
+        model = "gpt-6-luna" if request.url.host == "host.docker.internal" else "ddu-narrator"
+        return httpx.Response(200, json={"model": model, "choices": choices})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_app(
+        client_token=CLIENT,
+        admin_token=ADMIN,
+        bridge_token=BRIDGE,
+        state_path=tmp_path / "state.json",
+        upstream_client=http,
+    )
+    client = TestClient(app)
+    response = client.post(
+        "/v1/chat/completions",
+        json=completion_request(),
+        headers={"Authorization": f"Bearer {CLIENT}"},
+    )
+    assert response.status_code == 502
+    status = client.get(
+        "/admin/v1/providers", headers={"Authorization": f"Bearer {ADMIN}"}
+    )
+    local = next(item for item in status.json()["providers"] if item["id"] == "local_qwen")
+    assert local["last_failure"] == expected_failure
 
 
 def setup(tmp_path, *, luna_enabled=None):

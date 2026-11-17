@@ -18,7 +18,19 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 LOCAL_URL = "http://ddu-llm:8080"
-LUNA_URL = "http://host.docker.internal:18765"
+
+
+def luna_bridge_url(port: str | None = None) -> str:
+    try:
+        bridge_port = int(port or "18765")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("LUNA_BRIDGE_PORT must be an integer TCP port") from exc
+    if not 1024 <= bridge_port <= 65535:
+        raise ValueError("LUNA_BRIDGE_PORT must be between 1024 and 65535")
+    return f"http://host.docker.internal:{bridge_port}"
+
+
+LUNA_URL = luna_bridge_url(os.getenv("LUNA_BRIDGE_PORT"))
 MAX_BODY = 128_000
 MAX_UPSTREAM_RESPONSE = 128_000
 MAX_MODEL_RESPONSE = 32_000
@@ -494,15 +506,20 @@ def create_app(
                     error_class = "reasoning_effort_mismatch"
                     raise ValueError()
                 choices = payload.get("choices")
-                if (
-                    not isinstance(choices, list)
-                    or not choices
-                    or not isinstance(choices[0], dict)
-                    or not isinstance(choices[0].get("message"), dict)
-                    or not isinstance(choices[0]["message"].get("content"), str)
-                ):
-                    error_class = "malformed_response"
+                if not isinstance(choices, list) or not choices:
+                    error_class = "missing_choices"
                     raise ValueError()
+                choice = choices[0]
+                if not isinstance(choice, dict):
+                    error_class = "malformed_choice"
+                    raise TypeError()
+                message = choice.get("message")
+                if not isinstance(message, dict):
+                    error_class = "missing_message"
+                    raise TypeError()
+                if not isinstance(message.get("content"), str):
+                    error_class = "non_text_content"
+                    raise TypeError()
             except httpx.TimeoutException:
                 error_class = "timeout"
                 raise HTTPException(504, "Provider timed out") from None
