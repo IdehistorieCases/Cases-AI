@@ -696,3 +696,27 @@ export function getJobArtifact(jobId: string): Promise<{ job_id: string; records
     `/api/control/v1/jobs/${encodeURIComponent(jobId)}/artifact`,
   );
 }
+
+export interface ProviderSnapshot {
+  providers: Array<{ id: "local_qwen" | "codex_cli"; model: string; configured: boolean;
+    enabled: boolean; ready: boolean; failures: number; requests: number; last_failure: string | null;
+    last_health_check: string | null; health_latency_ms: number | null; last_latency_ms: number | null;
+    latency_samples: number; total_latency_ms: number; error_class: string | null }>;
+}
+
+export function getProviders(): Promise<ProviderSnapshot> {
+  return getJson<ProviderSnapshot>("/api/control/v1/providers");
+}
+
+export async function setLunaEnabled(enabled: boolean, csrfToken: string): Promise<{ enabled: boolean }> {
+  const response = await fetch("/api/control/v1/providers/gpt6_luna_high", {
+    method: "PUT",
+    headers: { Accept: "application/json", "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    credentials: "same-origin",
+    cache: "no-store",
+    body: JSON.stringify({ enabled }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new ApiRequestError(response.status);
+  return (await response.json()) as { enabled: boolean };
+}

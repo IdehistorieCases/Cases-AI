@@ -1,10 +1,10 @@
 # Chat provider selector status
 
-**Status: cloud provider disabled. Host-only M0 POC ready for review; M0 gate not passed (2026-11-11).** This document records the feasibility gate from the dual-provider implementation plan. The current dashboard remains local-only; it has no ChatGPT sign-in flow, cloud route, selector, or cloud credentials.
+**Status: Codex CLI gateway path implemented; SIWC remains a gated, unauthorized POC.** The dashboard can administer an explicitly enabled Codex CLI bridge through the local inference gateway. This path uses the already-authenticated Windows Codex CLI and does not use SIWC or browser credentials.
 
 ## Existing local path
 
-The Examples workspace sends typed chat to the authenticated, CSRF-protected dashboard route `POST /api/control/v1/examples/chat-voice/chat`. The dashboard `ExampleProxy` forwards it to the existing Chat + Voice container, which calls the local vLLM `ddu-narrator` alias. Speech recognition and synthesis use separate routes. The local provider is the only implemented provider.
+The Examples workspace sends typed chat to the authenticated, CSRF-protected dashboard route `POST /api/control/v1/examples/chat-voice/chat`. The dashboard `ExampleProxy` forwards it to the existing Chat + Voice container, which calls the local vLLM `ddu-narrator` alias. Speech recognition and synthesis use separate routes. The existing Chat + Voice example remains local Qwen. Separately, API clients can address ddu-narrator or gpt-6-luna through the inference gateway. Luna is disabled by default and enabled through the authenticated dashboard Providers page.
 
 ## Existing interfaces and lifecycle
 
@@ -12,6 +12,12 @@ The Examples workspace sends typed chat to the authenticated, CSRF-protected das
 - Transcription is a `multipart/form-data` POST with `file` and `language` (`da` or `en`). Accepted audio types are WebM, WAV, Ogg, MPEG, and MP4; the dashboard limit is 25 MB. The JSON reply contains `text`.
 - Synthesis is a JSON POST with `text` and `language` (`da` or `en`); it returns WAV audio.
 - Example status requires an administrator session. POST operations require the session CSRF token. Chat readiness comes from the local `ddu-narrator` dependency; voice readiness separately depends on `ddu-stt` and `ddu-tts`. Start/stop share the dashboard activity reservation. [EXAMPLES.md](EXAMPLES.md) documents readiness, startup, idle timeout, and recovery behavior.
+
+## Codex CLI gateway path
+
+The Windows host bridge lives at integrations/codex-bridge/; the router and dashboard controls are documented in deploy/inference-gateway/README.md. The bridge runs as the signed-in Windows user on loopback, invokes authenticated Codex CLI in a private temporary read-only directory, and uses a separate bridge bearer token. The gateway is the only holder of that token. CASES clients receive only the gateway client token. The dashboard host reads its admin token from the private gateway .env; it does not return that token to the browser.
+
+The implementation branch has automated tests with synthetic upstream fixtures. It has not been deployed or live-probed against the Windows bridge or a signed-in account. No OAuth flow or browser credentials are involved.
 
 ## M0 findings
 

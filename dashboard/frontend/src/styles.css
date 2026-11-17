@@ -780,3 +780,11 @@ button:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
   .example-workspace .preset-options { gap: 4px; }
   .example-workspace .preset-option span { padding-inline: 5px; font-size: 13px; }
 }
+
+.provider-card p { max-width: 760px; color: #aab5ad; line-height: 1.6; }
+.provider-facts { display: grid; grid-template-columns: 110px 1fr; gap: 7px 14px; margin: 18px 0; font-size: 13px; }
+.provider-facts dt { color: #7f8d84; }
+.provider-facts dd { margin: 0; color: #d9e3dc; }
+.provider-card code { color: #bce5cb; }
+
+.provider-consent { display: flex; align-items: center; gap: 9px; margin: 8px 0 14px; color: #d4c59c; font-size: 12px; }

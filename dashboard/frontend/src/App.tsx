@@ -11,14 +11,15 @@ import { ExamplesPage } from "./pages/ExamplesPage";
 import { LogsPage } from "./pages/LogsPage";
 import { ModelsPage } from "./pages/ModelsPage";
 import { OverviewPage } from "./pages/OverviewPage";
+import { ProvidersPage } from "./pages/ProvidersPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { startDashboardPolling } from "./polling";
 
-type PageName = "Overview" | "Models" | "Benchmarks" | "Logs" | "Databases" | "Examples" | "Settings";
+type PageName = "Overview" | "Models" | "Benchmarks" | "Logs" | "Databases" | "Examples" | "Providers" | "Settings";
 
 const EXAMPLES_PATH = "/examples";
 const WORKSPACE_PATH = "/examples/chat-voice";
-const DASHBOARD_PAGES: PageName[] = ["Overview", "Models", "Benchmarks", "Logs", "Databases", "Settings"];
+const DASHBOARD_PAGES: PageName[] = ["Overview", "Models", "Benchmarks", "Logs", "Databases", "Providers", "Settings"];
 
 function readNavigation(): { page: PageName; workspace: boolean } {
   const path = window.location.pathname;
@@ -124,7 +125,7 @@ function Sidebar({ page, onNavigate, onLogout }: {
   onNavigate: (page: PageName) => void;
   onLogout: () => void;
 }) {
-  const pages: PageName[] = ["Overview", "Models", "Benchmarks", "Logs", "Databases", "Examples", "Settings"];
+  const pages: PageName[] = ["Overview", "Models", "Benchmarks", "Logs", "Databases", "Examples", "Providers", "Settings"];
   return (
     <aside className="sidebar">
       <div className="brand-lockup">
@@ -150,7 +151,7 @@ function Sidebar({ page, onNavigate, onLogout }: {
 }
 
 function Topbar({ page, status }: { page: PageName; status: DashboardStatus | null }) {
-  const heading = page === "Overview" ? "System overview" : page === "Models" ? "Model configuration" : page === "Benchmarks" ? "Benchmarks & jobs" : page === "Logs" ? "Service logs" : page === "Databases" ? "Database monitoring" : page === "Examples" ? "Hands-on examples" : "Security settings";
+  const heading = page === "Overview" ? "System overview" : page === "Models" ? "Model configuration" : page === "Benchmarks" ? "Benchmarks & jobs" : page === "Logs" ? "Service logs" : page === "Databases" ? "Database monitoring" : page === "Examples" ? "Hands-on examples" : page === "Providers" ? "Inference providers" : "Security settings";
   const freshness = status?.status_cache;
   const freshnessLabel = freshness?.stale
     ? freshness.refreshing ? "STALE · REFRESHING" : "STALE SNAPSHOT"
@@ -218,6 +219,7 @@ function AuthenticatedDashboard({
           onOpenWorkspace={() => navigate("Examples", true)}
           onReturnToCatalog={() => navigate("Examples")}
         />}
+        {page === "Providers" && <ProvidersPage csrfToken={authState.csrfToken} onSessionExpired={onSessionExpired} />}
         {page === "Settings" && <SettingsPage
           authClient={authClient}
           csrfToken={authState.csrfToken}
