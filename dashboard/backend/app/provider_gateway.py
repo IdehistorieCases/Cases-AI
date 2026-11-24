@@ -12,7 +12,7 @@ from app.auth import AuthSession, require_csrf, require_session
 
 router = APIRouter(prefix="/api/control/v1/providers", tags=["providers"])
 ROOT = Path(__file__).resolve().parents[3]
-GATEWAY_URL = "http://127.0.0.1:18766"
+DEFAULT_GATEWAY_PORT = 18766
 
 
 class LunaToggle(BaseModel):
@@ -21,18 +21,40 @@ class LunaToggle(BaseModel):
     cloud_consent: StrictBool = False
 
 
-def _admin_token() -> str | None:
+def _gateway_env_file() -> Path:
     configured = os.getenv("LOCALAI_GATEWAY_ENV_FILE")
-    path = Path(configured).expanduser() if configured else ROOT / "deploy" / "inference-gateway" / ".env"
+    return (
+        Path(configured).expanduser()
+        if configured
+        else ROOT / "deploy" / "inference-gateway" / ".env"
+    )
+
+
+def _gateway_setting(name: str) -> str | None:
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in _gateway_env_file().read_text(encoding="utf-8").splitlines():
             key, separator, value = line.partition("=")
-            if separator and key.strip() == "GATEWAY_ADMIN_TOKEN":
-                token = value.strip().strip('"').strip("'")
-                return token if len(token) >= 24 else None
+            if separator and key.strip() == name:
+                return value.strip().strip('"').strip("'")
     except OSError:
         return None
     return None
+
+
+def _admin_token() -> str | None:
+    token = _gateway_setting("GATEWAY_ADMIN_TOKEN")
+    return token if token and len(token) >= 24 else None
+
+
+def _gateway_url() -> str:
+    raw_port = _gateway_setting("GATEWAY_ADMIN_HOST_PORT")
+    try:
+        port = int(raw_port) if raw_port else DEFAULT_GATEWAY_PORT
+    except ValueError:
+        port = DEFAULT_GATEWAY_PORT
+    if not 1 <= port <= 65535:
+        port = DEFAULT_GATEWAY_PORT
+    return f"http://127.0.0.1:{port}"
 
 
 async def _gateway(method: str, path: str, *, body: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -42,7 +64,7 @@ async def _gateway(method: str, path: str, *, body: dict[str, Any] | None = None
     try:
         async with httpx.AsyncClient(timeout=4.0) as client:
             response = await client.request(
-                method, GATEWAY_URL + path, headers={"Authorization": f"Bearer {token}"},
+                method, _gateway_url() + path, headers={"Authorization": f"Bearer {token}"},
                 json=body,
             )
     except httpx.HTTPError:
