@@ -1,10 +1,14 @@
-# Local-AI-API-LITE
+# Cases-AI — inference and model services for CASES
 
-A small, independently deployed GPU inference service for trusted local clients. V1 runs one quantized Qwen3.5-4B model in vLLM and exposes the OpenAI-compatible chat-completions API on the private Docker network `ddu_inference_bus`.
+This is the canonical AI-service repository for the CASES game. Some Compose projects, dashboards, and local data paths retain the legacy `Local-AI-API-LITE` name. The repository contains the optional local Qwen vLLM provider, the ChatGPT 6 Luna gateway and Codex CLI bridge, and CPU retrieval services for trusted local clients.
 
-This repository owns the model server, model cache, and serving limits. It does not own application state, prompts or game rules. The history backend and future independent clients use the same resident model through `http://ddu-llm:8080` and the `ddu-narrator` API model alias.
+This repository owns the inference and retrieval services and their serving limits. It does not own application state, prompts, or game rules. Optional local Qwen is served through `http://ddu-llm:8080` as `ddu-narrator`; the CASES game uses ChatGPT 6 Luna through the signed-in Windows Codex CLI bridge as its main narrator.
 
-## Start
+## Coordinated CASES startup
+
+For the playable CASES stack, use [Cases-Startup](https://github.com/IdehistorieCases/Cases-Startup). It pins Cases-AI, Cases-Backend, and Cases-GUI, prepares private local configuration, then starts the Luna bridge and gateway, backend, and GUI in order. The gateway starts with Luna disabled on a fresh install; an operator enables it through the dashboard only after reviewing the cloud-data disclosure.
+
+## Optional Local Qwen service
 
 Requirements: Docker Desktop with Linux containers, WSL2 GPU support, an NVIDIA driver visible to Docker, and enough free disk for the image and model cache. The pinned checkpoint is public; no Hugging Face token is required.
 
@@ -55,6 +59,10 @@ python -m venv .venv
 .\.venv\Scripts\ruff.exe check scripts tests dashboard/backend
 docker compose config --quiet
 ```
+
+## CASES narrator configuration
+
+The connected CASES game uses ChatGPT 6 Luna (`gpt-6-luna`) through the Windows Codex CLI bridge as its default narrator. A session is pinned to its selected provider; Luna never falls back to local Qwen. The dashboard keeps Luna disabled until an operator acknowledges the cloud-data disclosure and enables it. Local Qwen is an optional provider, not a required Luna dependency. See [Cases-Startup](https://github.com/IdehistorieCases/Cases-Startup) for pinned, coordinated startup of the bridge, gateway, backend, and GUI.
 
 ## Service boundaries
 

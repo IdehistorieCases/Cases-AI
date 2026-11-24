@@ -5,13 +5,13 @@ The inference-gateway joins the existing external ddu_inference_bus and has no h
 ## Configure and start
 
 1. Copy .env.example to .env. Replace every placeholder with a different random token using a password manager or a local secure random generator. Keep .env untracked and do not paste values into chat, terminals that record transcripts, or logs.
-2. Ensure the Docker network ddu_inference_bus already exists and that local Qwen is reachable as ddu-llm:8080.
+2. Ensure the Docker network `ddu_inference_bus` already exists. Local Qwen at `ddu-llm:8080` is optional for a Luna-only deployment; start it only when a session explicitly selects `local_qwen`.
 3. Start the gateway from the repository root with Luna still disabled:
 
     docker compose --env-file deploy/inference-gateway/.env -f deploy/inference-gateway/compose.yaml up -d --build
 
 4. Follow the bridge README and start the bridge on loopback. If a legacy bridge already owns port 18765, set `LOCALAI_CODEX_BRIDGE_PORT=18767` and `LUNA_BRIDGE_PORT=18767` so both can run during rollback. Verify `host.docker.internal:<port>` is reachable from the gateway container before enabling Luna.
-5. Query `/health`, authenticated `/v1/models`, and dashboard Providers. Confirm Qwen and the bridge are ready before enabling Luna. Do not send a completion until the cloud disclosure is acknowledged in the dashboard.
+5. Query `/health`, authenticated `/v1/models`, and dashboard Providers. For a Luna session, confirm the Codex CLI bridge is ready before enabling Luna. Qwen readiness is independent. Do not send a completion until the cloud disclosure is acknowledged in the dashboard.
 
 Set CASES or another container on `ddu_inference_bus` to `http://ddu-gateway:8080` and the `GATEWAY_CLIENT_TOKEN`; never give it either admin or bridge token. The loopback host port `http://127.0.0.1:18766` serves only the admin proxy. Dashboard controls require the normal administrator login and CSRF session.
 
@@ -24,3 +24,5 @@ To disable Luna, use the dashboard Providers page or the authenticated admin API
     docker compose --env-file deploy/inference-gateway/.env -f deploy/inference-gateway/compose.yaml down
 
 Then stop the Windows bridge. Existing root Compose vLLM controls are independent. Removing the named gateway-state volume resets provider enablement to the safe disabled default.
+
+For the coordinated CASES game startup, pinned source revisions, and the ChatGPT 6 Luna session default, use [IdehistorieCases/Cases-Startup](https://github.com/IdehistorieCases/Cases-Startup).
