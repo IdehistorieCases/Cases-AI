@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any
 
@@ -8,7 +9,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-UPSTREAM = "http://ddu-gateway:8080"
+UPSTREAM = os.getenv("GATEWAY_UPSTREAM_URL", "http://ddu-gateway:8080").rstrip("/")
 MAX_REQUEST_BYTES = 4096
 MAX_RESPONSE_BYTES = 32_000
 ALLOWED_ROUTES = {

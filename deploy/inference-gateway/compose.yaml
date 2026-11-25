@@ -2,7 +2,7 @@ services:
   inference-gateway:
     build:
       context: ../../services/inference_gateway
-    container_name: ddu-gateway
+    container_name: ${GATEWAY_CONTAINER_NAME:-ddu-gateway}
     restart: unless-stopped
     environment:
       GATEWAY_CLIENT_TOKEN: ${GATEWAY_CLIENT_TOKEN:?set GATEWAY_CLIENT_TOKEN}
@@ -18,10 +18,10 @@ services:
     networks:
       ddu_inference_bus:
         aliases:
-          - ddu-gateway
+          - ${GATEWAY_NETWORK_ALIAS:-ddu-gateway}
       gateway_admin_bus:
         aliases:
-          - ddu-gateway
+          - ${GATEWAY_NETWORK_ALIAS:-ddu-gateway}
     read_only: true
     tmpfs:
       - /tmp:size=8m,mode=1777
@@ -34,14 +34,16 @@ services:
   admin-proxy:
     build:
       context: ../../services/inference_gateway
-    container_name: ddu-gateway-admin
+    container_name: ${GATEWAY_ADMIN_CONTAINER_NAME:-ddu-gateway-admin}
     command: ["uvicorn", "admin_proxy:app", "--host", "0.0.0.0", "--port", "8080", "--limit-concurrency", "16"]
     restart: unless-stopped
+    environment:
+      GATEWAY_UPSTREAM_URL: "${GATEWAY_UPSTREAM_URL:-http://ddu-gateway:8080}"
     depends_on:
       inference-gateway:
         condition: service_started
     ports:
-      - 127.0.0.1:18766:8080
+      - "127.0.0.1:${GATEWAY_ADMIN_HOST_PORT:-18766}:8080"
     networks:
       - gateway_admin_bus
     read_only: true
@@ -56,9 +58,6 @@ services:
 networks:
   ddu_inference_bus:
     external: true
-  gateway_admin_bus:
-    ipam:
-      config:
-        - subnet: 10.255.254.0/24
+  gateway_admin_bus: {}
 volumes:
   gateway-state:
