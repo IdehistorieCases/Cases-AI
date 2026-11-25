@@ -271,6 +271,14 @@ def _strict_codex_schema(value: Any) -> Any:
         for key, item in value.items()
         if key != "default"
     }
+    discriminator = result.get("discriminator")
+    tagged_branches = result.get("oneOf")
+    if isinstance(discriminator, dict) and isinstance(tagged_branches, list):
+        # Codex strict schemas reject oneOf. This is a tagged union, so its
+        # discriminator makes the anyOf branches mutually exclusive. CASES
+        # validates the generated value against the original schema afterward.
+        result["anyOf"] = result.pop("oneOf")
+        result.pop("discriminator", None)
     properties = result.get("properties")
     if result.get("type") == "object" and isinstance(properties, dict):
         required = set(result.get("required", []))
